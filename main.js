@@ -1,18 +1,21 @@
 import http from 'k6/http';
 import { sleep } from 'k6';
 
+
+
 export const options = {
     insecureSkipTLSVerify: true,
     scenarios: {
         contacts: {
             executor: 'per-vu-iterations',
-            vus: 20,
+            vus: 50,
             iterations: 1,
             maxDuration: '1h',
         },
     },
 };
 
+  
 export function getAuthToken() {
     const authToken = __ENV.K6_AUTH_TOKEN;
     if (!authToken) {

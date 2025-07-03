@@ -1,0 +1,24 @@
+# macOS system files
+.DS_Store
+
+# Editor swap/backup files
+*~
+*.swp
+*.swo
+
+# k6 build artifacts (if you build a custom binary)
+k6
+
+# Logs and temp files
+*.log
+tmp/
+
+# Node.js (if used in the future)
+node_modules/
+
+# Python virtual environments (if used in the future)
+venv/
+__pycache__/
+
+# VSCode settings (optional)
+.vscode/ 

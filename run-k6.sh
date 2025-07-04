@@ -14,10 +14,28 @@ if [ -z "$AUTH_TOKEN" ] || [ "$AUTH_TOKEN" == "null" ]; then
 fi
 
 echo "✅ Auth token fetched."
+
+# 🔍 Check for --cloud flag
+USE_CLOUD=false
+for arg in "$@"
+do
+  if [ "$arg" == "--cloud" ]; then
+    USE_CLOUD=true
+    break
+  fi
+done
+
 echo "🚀 Running k6 test..."
 
-# ✅ Run K6 with output to InfluxDB v1
-k6 run \
-  --env K6_AUTH_TOKEN="$AUTH_TOKEN" \
-  --out influxdb=http://localhost:8087/k6 \
-  main.js
+if [ "$USE_CLOUD" = true ]; then
+  echo "☁️ Using K6 Cloud output..."
+  k6 cloud \
+    --env K6_AUTH_TOKEN="$AUTH_TOKEN" \
+    main.js
+else
+  echo "💾 Using local InfluxDB output..."
+  k6 run \
+    --env K6_AUTH_TOKEN="$AUTH_TOKEN" \
+    --out influxdb=http://localhost:8087/k6 \
+    main.js
+fi

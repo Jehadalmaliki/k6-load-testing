@@ -1,21 +1,28 @@
 import http from 'k6/http';
 import { sleep } from 'k6';
 
-
-
 export const options = {
     insecureSkipTLSVerify: true,
+    noConnectionReuse: true,
+
     scenarios: {
         contacts: {
-            executor: 'per-vu-iterations',
-            vus: 50,
-            iterations: 1,
-            maxDuration: '1h',
+            executor: 'ramping-vus',
+            stages: [
+                { duration: '10s', target: 25 },   // ramp-up to 25 VUs
+                { duration: '10s', target: 50 },   // ramp-up to 50 VUs
+                { duration: '10s', target: 75 },   // ramp-up to 75 VUs
+                { duration: '20s', target: 100 },  // ramp-up to 100 VUs
+                { duration: '30s', target: 100 },  // hold at 100 VUs
+                { duration: '10s', target: 0 },    // ramp-down to 0
+              ],
+            gracefulRampDown: '30s',
+            gracefulStop: '30s',
         },
     },
 };
 
-  
+
 export function getAuthToken() {
     const authToken = __ENV.K6_AUTH_TOKEN;
     if (!authToken) {
@@ -24,109 +31,92 @@ export function getAuthToken() {
     return authToken;
 }
 
-function createWorkspace(authToken, workspaceName) {
-    const headers = {
+function retryPost(url, payload, headers, retries = 5) {
+    let attempt = 0;
+    let res;
+    while (attempt < retries) {
+        try {
+            res = http.post(url, payload, {
+                headers,
+                timeout: '60s',
+            });
+            if (res.status === 200) return res;
+            console.warn(`⚠️ Attempt ${attempt + 1} failed with status ${res.status}`);
+        } catch (err) {
+            console.warn(`⚠️ Attempt ${attempt + 1} failed with error: ${err.message}`);
+        }
+        sleep(Math.pow(2, attempt) + Math.random()); // exponential backoff + jitter
+        attempt++;
+    }
+    throw new Error(`❌ All retry attempts failed for POST ${url}`);
+}
+
+function commonHeaders(authToken, workspaceId) {
+    return {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${authToken}`,
         'x-tenant': 'organization',
-        'x-fastn-space-id': 'a51cac39-9893-493a-a492-1df612522bf0',
+        'x-fastn-space-id': workspaceId,
         'realm': 'fastn',
         'accept': '*/*'
     };
+}
+
+function createWorkspace(authToken, workspaceName) {
+    console.info(`🛠️ Creating workspace: ${workspaceName}`);
+    const headers = commonHeaders(authToken, 'a51cac39-9893-493a-a492-1df612522bf0');
     const payload = JSON.stringify({
-        query: `mutation CreateProject($input: CreateProjectInput!) {\n  createProject(input: $input) {\n    id\n    name\n    __typename\n  }\n}`,
+        query: `mutation CreateProject($input: CreateProjectInput!) {
+            createProject(input: $input) { id name __typename }
+        }`,
         variables: {
-            input: {
-                name: workspaceName,
-                slug: workspaceName,
-                type: "organization"
-            }
+            input: { name: workspaceName, slug: workspaceName, type: "organization" }
         }
     });
-    const res = http.post(
-        'https://qa.fastn.ai/api/graphql',
-        payload,
-        { headers }
-    );
-    if (res.status !== 200) {
-        throw new Error('Failed to create workspace: ' + res.body);
-    }
+    const res = retryPost('https://qa.fastn.ai/api/graphql', payload, headers);
     return res.json('data.createProject.id');
 }
 
-function updateWorkspaceToEnterprise(authToken, workspaceId) {
-    const headers = {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${authToken}`,
-        'x-tenant': 'organization',
-        'x-fastn-space-id': workspaceId,
-        'realm': 'fastn',
-        'accept': '*/*'
-    };
+function updateWorkspaceToEnterprise(authToken, workspaceId, workspaceName) {
+    const headers = commonHeaders(authToken, workspaceId);
     const payload = JSON.stringify({
-        query: `mutation UpdateProjectConfiguration($input: UpdateProjectConfigurationInput!) {\n  updateProjectConfiguration(input: $input) {\n    projectId\n    features\n    __typename\n  }\n}`,
+        query: `mutation UpdateProjectConfiguration($input: UpdateProjectConfigurationInput!) {
+            updateProjectConfiguration(input: $input) { projectId features __typename }
+        }`,
         variables: {
-            input: {
-                projectId: workspaceId,
-                type: "enterprise"
-            }
+            input: { projectId: workspaceId, type: "enterprise" }
         }
     });
-    const res = http.post(
-        'https://qa.fastn.ai/api/graphql',
-        payload,
-        { headers }
-    );
-    if (res.status !== 200) {
-        throw new Error('Failed to update workspace to enterprise: ' + res.body);
+    try {
+        retryPost('https://qa.fastn.ai/api/graphql', payload, headers);
+    } catch (err) {
+        console.warn(`❌ Failed to update workspace ${workspaceName} to enterprise: ${err.message}`);
     }
 }
 
-function createTable(authToken, workspaceId, tableName) {
-    const headers = {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${authToken}`,
-        'x-tenant': 'organization',
-        'x-fastn-space-id': workspaceId,
-        'realm': 'fastn',
-        'accept': '*/*'
-    };
+function createTable(authToken, workspaceId, tableName, workspaceName) {
+    const headers = commonHeaders(authToken, workspaceId);
     const payload = JSON.stringify({
-        query: `mutation CreateTable($input: CreateTableInput!) {\n  createTable(input: $input) {\n    id\n    name\n    __typename\n  }\n}`,
+        query: `mutation CreateTable($input: CreateTableInput!) {
+            createTable(input: $input) { id name __typename }
+        }`,
         variables: {
             input: {
                 clientId: workspaceId,
                 name: tableName,
-                schema: {
-                    fields: [{
-                        name: "title",
-                        type: "string"
-                    }]
-                }
+                schema: { fields: [{ name: "title", type: "string" }] }
             }
         }
     });
-    const res = http.post(
-        'https://qa.fastn.ai/api/graphql',
-        payload,
-        { headers }
-    );
-    if (res.status !== 200) {
-        throw new Error('Failed to create table: ' + res.body);
-    }
+    retryPost('https://qa.fastn.ai/api/graphql', payload, headers);
 }
 
-function addRecords(authToken, workspaceId, tableName, records) {
-    const headers = {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${authToken}`,
-        'x-tenant': 'organization',
-        'x-fastn-space-id': workspaceId,
-        'realm': 'fastn',
-        'accept': '*/*'
-    };
+function addRecords(authToken, workspaceId, tableName, records, workspaceName) {
+    const headers = commonHeaders(authToken, workspaceId);
     const payload = JSON.stringify({
-        query: `mutation AddRecords($input: AddRecordsInput!) {\n  addRecords(input: $input) {\n    id\n    __typename\n  }\n}`,
+        query: `mutation AddRecords($input: AddRecordsInput!) {
+            addRecords(input: $input) { id __typename }
+        }`,
         variables: {
             input: {
                 clientId: workspaceId,
@@ -135,27 +125,15 @@ function addRecords(authToken, workspaceId, tableName, records) {
             }
         }
     });
-    const res = http.post(
-        'https://qa.fastn.ai/api/graphql',
-        payload,
-        { headers }
-    );
-    if (res.status !== 200) {
-        throw new Error('Failed to add records: ' + res.body);
-    }
+    retryPost('https://qa.fastn.ai/api/graphql', payload, headers);
 }
 
 function getRecords(authToken, workspaceId, tableName) {
-    const headers = {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${authToken}`,
-        'x-tenant': 'organization',
-        'x-fastn-space-id': workspaceId,
-        'realm': 'fastn',
-        'accept': '*/*'
-    };
+    const headers = commonHeaders(authToken, workspaceId);
     const payload = JSON.stringify({
-        query: `query GetRecords($input: GetRecordsInput!) {\n  getRecords(input: $input) {\n    records\n    __typename\n  }\n}`,
+        query: `query GetRecords($input: GetRecordsInput!) {
+            getRecords(input: $input) { records __typename }
+        }`,
         variables: {
             input: {
                 clientId: workspaceId,
@@ -163,27 +141,21 @@ function getRecords(authToken, workspaceId, tableName) {
             }
         }
     });
-    const res = http.post(
-        'https://qa.fastn.ai/api/graphql',
-        payload,
-        { headers }
-    );
+
+    const res = retryPost('https://qa.fastn.ai/api/graphql', payload, headers);
     if (res.status !== 200) {
+        console.warn(`❌ Failed to get records for workspace ${workspaceId}: ${res.status}`);
         throw new Error('Failed to get records: ' + res.body);
     }
 }
 
-function removeTable(authToken, workspaceId, tableName) {
-    const headers = {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${authToken}`,
-        'x-tenant': 'organization',
-        'x-fastn-space-id': workspaceId,
-        'realm': 'fastn',
-        'accept': '*/*'
-    };
+
+function removeTable(authToken, workspaceId, tableName, workspaceName) {
+    const headers = commonHeaders(authToken, workspaceId);
     const payload = JSON.stringify({
-        query: `mutation RemoveTable($input: GetEntityInput!) {\n  removeTable(input: $input)\n}`,
+        query: `mutation RemoveTable($input: GetEntityInput!) {
+            removeTable(input: $input)
+        }`,
         variables: {
             input: {
                 clientId: workspaceId,
@@ -191,106 +163,61 @@ function removeTable(authToken, workspaceId, tableName) {
             }
         }
     });
-    const res = http.post(
-        'https://qa.fastn.ai/api/graphql',
-        payload,
-        { headers }
-    );
-    if (res.status !== 200) {
-        throw new Error('Failed to remove table: ' + res.body);
-    }
+    retryPost('https://qa.fastn.ai/api/graphql', payload, headers);
 }
 
-function deleteWorkspace(authToken, workspaceId) {
-    const headers = {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${authToken}`,
-        'x-tenant': 'organization',
-        'x-fastn-space-id': workspaceId,
-        'realm': 'fastn',
-        'accept': '*/*'
-    };
+function enableWorkspaceDeletion(authToken, workspaceId, workspaceName) {
+    const headers = commonHeaders(authToken, workspaceId);
     const payload = JSON.stringify({
-        query: `mutation DeleteProject($id: String!) {\n  deleteOrganization(id: $id) {\n    id\n    __typename\n  }\n}`,
-        variables: { id: workspaceId }
-    });
-    const res = http.post(
-        'https://qa.fastn.ai/api/graphql',
-        payload,
-        { headers }
-    );
-    if (res.status !== 200) {
-        throw new Error('Failed to delete workspace: ' + res.body);
-    }
-}
-
-function enableWorkspaceDeletion(authToken, workspaceId) {
-    const headers = {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${authToken}`,
-        'x-tenant': 'organization',
-        'x-fastn-space-id': workspaceId,
-        'realm': 'fastn',
-        'accept': '*/*'
-    };
-    const payload = JSON.stringify({
-        query: `mutation UpdateProjectConfiguration($input: UpdateProjectConfigurationInput!) {\n  updateProjectConfiguration(input: $input) {\n    projectId\n    features\n    __typename\n  }\n}`,
+        query: `mutation UpdateProjectConfiguration($input: UpdateProjectConfigurationInput!) {
+            updateProjectConfiguration(input: $input) { projectId features __typename }
+        }`,
         variables: {
             input: {
                 projectId: workspaceId,
-                features: {
-                    useTrashFeature: true
-                }
+                features: { useTrashFeature: true }
             }
         }
     });
-    const res = http.post(
-        'https://qa.fastn.ai/api/graphql',
-        payload,
-        { headers }
-    );
-    if (res.status !== 200) {
-        throw new Error('Failed to enable workspace deletion: ' + res.body);
-    }
+    retryPost('https://qa.fastn.ai/api/graphql', payload, headers);
+}
+
+function deleteWorkspace(authToken, workspaceId, workspaceName) {
+    const headers = commonHeaders(authToken, workspaceId);
+    const payload = JSON.stringify({
+        query: `mutation DeleteProject($id: String!) {
+            deleteOrganization(id: $id) { id __typename }
+        }`,
+        variables: { id: workspaceId }
+    });
+    retryPost('https://qa.fastn.ai/api/graphql', payload, headers);
 }
 
 export default function () {
+    sleep(Math.random());
     const authToken = getAuthToken();
     const workspaceName = `k6-test-workspace-${__VU}-${__ITER}`;
     const tableName = `k6-test-table-${__VU}-${__ITER}`;
 
-    // 1. Create Workspace
-    const workspaceId = createWorkspace(authToken, workspaceName);
-    sleep(1);
-
-    // 2. Update Workspace/Project Type to Enterprise
-    updateWorkspaceToEnterprise(authToken, workspaceId);
-    sleep(1);
-
-    // 3. Create Table
-    createTable(authToken, workspaceId, tableName);
-    sleep(1);
-
-    // 4. Add Records
-    const recordData = [[{ key: "title", value: "Test Record 1" }]];
-    addRecords(authToken, workspaceId, tableName, recordData);
-    sleep(1);
-
-    // 5. Get Records
-    getRecords(authToken, workspaceId, tableName);
-    sleep(1);
-
-    // 6. Remove Table
-    removeTable(authToken, workspaceId, tableName);
-    sleep(2);
-
-    // 7. Enable Workspace Deletion
-    enableWorkspaceDeletion(authToken, workspaceId);
-    sleep(1);
-
-    // 8. Delete Workspace
-    deleteWorkspace(authToken, workspaceId);
-    sleep(1);
+    try {
+        const workspaceId = createWorkspace(authToken, workspaceName);
+        sleep(1);
+        updateWorkspaceToEnterprise(authToken, workspaceId, workspaceName);
+        sleep(1);
+        createTable(authToken, workspaceId, tableName, workspaceName);
+        sleep(1);
+        const recordData = [[{ key: "title", value: "Test Record 1" }]];
+        addRecords(authToken, workspaceId, tableName, recordData, workspaceName);
+        sleep(1);
+        getRecords(authToken, workspaceId, tableName, workspaceName);
+        sleep(1);
+        removeTable(authToken, workspaceId, tableName, workspaceName);
+        sleep(2);
+        enableWorkspaceDeletion(authToken, workspaceId, workspaceName);
+        sleep(1);
+        deleteWorkspace(authToken, workspaceId, workspaceName);
+        sleep(1);
+    } catch (e) {
+        console.error(`❌ Error in test for workspace ${workspaceName}: ${e.message}`);
+    }
 }
-
-

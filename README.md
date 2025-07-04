@@ -45,5 +45,8 @@ This setup runs automated k6 load tests that simulate the full lifecycle of a pr
 - All test metrics are stored in InfluxDB v1 and visualized in Grafana for monitoring and analysis.
 
 
-## Run the Script
+## Run locally with InfluxDB:
 Execute ./run-k6.sh to:
+
+## Run on K6 Cloud:
+./run-k6.sh --cloud
